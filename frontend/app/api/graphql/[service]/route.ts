@@ -264,7 +264,9 @@ export async function POST(request: Request, { params }: { params: { service: Se
     await saveStore(store);
     return NextResponse.json({ data });
   } catch (error) {
-    return NextResponse.json({ errors: [{ message: error instanceof Error ? error.message : "GraphQL request failed" }] }, { status: 400 });
+    const message = error instanceof Error ? error.message : "GraphQL request failed";
+    // HTTP 200 so Apollo parses `errors` and clients can show the real message (400 becomes a generic HttpLink error).
+    return NextResponse.json({ data: null, errors: [{ message }] }, { status: 200 });
   }
 }
 

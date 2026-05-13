@@ -1,5 +1,5 @@
 import { ApolloClient, ApolloLink, HttpLink, InMemoryCache } from "@apollo/client";
-import { getOperationAST, parse } from "graphql";
+import { getOperationAST, parse, print } from "graphql";
 import type { DocumentNode } from "graphql";
 import type { ServiceKey } from "@/types/domain";
 
@@ -48,29 +48,33 @@ export async function runGraphQLDocument<T>(
   const operation = getOperationAST(document);
   if (!operation) throw new Error("Invalid GraphQL document");
 
-  const apollo = getApolloClient();
-  const context = { service, token };
+  const uri = serviceEndpoints[service];
+  const response = await fetch(uri, {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      ...(token ? { authorization: `Bearer ${token}` } : {})
+    },
+    body: JSON.stringify({ query: print(document), variables: variables ?? {} })
+  });
 
-  if (operation.operation === "mutation") {
-    const result = await apollo.mutate({
-      mutation: document,
-      variables,
-      context
-    });
-    if (result.error) throw new Error(String(result.error.message));
-    if (!result.data) throw new Error("GraphQL mutation returned no data");
-    return result.data as T;
+  let body: { data?: T; errors?: { message: string }[] };
+  try {
+    body = (await response.json()) as { data?: T; errors?: { message: string }[] };
+  } catch {
+    throw new Error(`Invalid response from server (HTTP ${response.status})`);
   }
 
-  const result = await apollo.query({
-    query: document,
-    variables,
-    context,
-    fetchPolicy: "network-only"
-  });
-  if (result.error) throw new Error(String(result.error.message));
-  if (!result.data) throw new Error("GraphQL query returned no data");
-  return result.data as T;
+  if (body.errors?.length) {
+    throw new Error(body.errors.map((entry) => entry.message).join("; "));
+  }
+  if (!response.ok) {
+    throw new Error(`Request failed with status ${response.status}`);
+  }
+  if (body.data === undefined || body.data === null) {
+    throw new Error("GraphQL returned no data");
+  }
+  return body.data as T;
 }
 
 export function parseGraphQL(query: string) {
