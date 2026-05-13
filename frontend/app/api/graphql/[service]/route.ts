@@ -344,7 +344,8 @@ function handleProfile(query: string, variables: Record<string, unknown>, store:
 
 function handleAvailability(query: string, variables: Record<string, unknown>, store: Store, user: User) {
   if (query.includes("getAvailability")) {
-    return { getAvailability: store.availability.filter((slot) => slot.userId === user.id) };
+    // Shared roster (like sessions): everyone sees all weekly blocks for scheduling context.
+    return { getAvailability: [...store.availability].sort((a, b) => a.userId.localeCompare(b.userId) || a.dayOfWeek.localeCompare(b.dayOfWeek)) };
   }
 
   if (query.includes("createSlot")) {

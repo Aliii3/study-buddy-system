@@ -268,7 +268,7 @@ export default function Home() {
             <ProfileView token={token} profile={state.profile} setState={setState} setStatus={setStatus} />
           )}
           {activeView === "availability" && (
-            <AvailabilityView token={token} slots={state.availability} setState={setState} setStatus={setStatus} />
+            <AvailabilityView token={token} user={state.user} slots={state.availability} setState={setState} setStatus={setStatus} />
           )}
           {activeView === "notifications" && (
             <NotificationsView token={token} user={state.user} notifications={state.notifications} setState={setState} setStatus={setStatus} />
@@ -551,7 +551,7 @@ function Dashboard({
         </section>
         <aside className="stack">
           <ProfileSummary profile={state.profile} />
-          <AvailabilitySummary slots={state.availability} />
+          <AvailabilitySummary slots={state.availability.filter((slot) => slot.userId === state.user?.id)} />
           <NotificationsList notifications={state.notifications.slice(0, 3)} />
         </aside>
       </div>
@@ -817,7 +817,9 @@ function MatchDetailView({
               <p className="muted">No direct course or topic overlap in synced data; match may be from availability or style.</p>
             )}
             <h3 style={{ marginTop: 16 }}>Your availability</h3>
-            <AvailabilitySummary slots={availability} expanded />
+            <AvailabilitySummary slots={availability.filter((slot) => slot.userId === profile.userId)} expanded />
+            <h3 style={{ marginTop: 16 }}>Their typical hours</h3>
+            <AvailabilitySummary slots={availability.filter((slot) => slot.userId === match.matchedUserId)} expanded />
           </section>
         </aside>
       </div>
@@ -1159,11 +1161,13 @@ function ProfileView({
 
 function AvailabilityView({
   token,
+  user,
   slots,
   setState,
   setStatus
 }: {
   token: string | null;
+  user: User;
   slots: AvailabilitySlot[];
   setState: React.Dispatch<React.SetStateAction<AppState>>;
   setStatus: (status: string) => void;
@@ -1176,7 +1180,7 @@ function AvailabilityView({
 
   async function saveSlot(event: React.FormEvent) {
     event.preventDefault();
-    const conflict = getAvailabilityConflict(form, slots, editingId);
+    const conflict = getAvailabilityConflict(form, slots, user.id, editingId);
     if (conflict) {
       setStatus(conflict);
       setMessage(conflict);
@@ -1234,6 +1238,8 @@ function AvailabilityView({
   }
 
   async function deleteSlot(slotId: string) {
+    const target = slots.find((s) => s.id === slotId);
+    if (!target || target.userId !== user.id) return;
     setDeletingId(slotId);
     setMessage("Removing availability slot...");
     try {
@@ -1262,6 +1268,7 @@ function AvailabilityView({
   }
 
   function editSlot(slot: AvailabilitySlot) {
+    if (slot.userId !== user.id) return;
     setEditingId(slot.id);
     setForm({ dayOfWeek: slot.dayOfWeek, startTime: slot.startTime, endTime: slot.endTime });
     setMessage("Editing weekly availability. Save changes when ready.");
@@ -1278,7 +1285,7 @@ function AvailabilityView({
       <div className="page-head">
         <div>
           <h1>Availability</h1>
-          <p className="muted">Recurring weekly time blocks used for scheduling confidence and matching overlap.</p>
+          <p className="muted">Weekly time blocks for everyone in the app (read-only for others). You can only edit or remove your own blocks.</p>
         </div>
       </div>
       <div className="dashboard-grid grid">
@@ -1311,7 +1318,7 @@ function AvailabilityView({
             {saving ? "Saving..." : editingId ? "Save Changes" : "Add Availability"}
           </button>
         </form>
-        <AvailabilitySummary slots={slots} expanded onEdit={editSlot} onDelete={deleteSlot} deletingId={deletingId} />
+        <AvailabilitySummary slots={slots} expanded currentUserId={user.id} onEdit={editSlot} onDelete={deleteSlot} deletingId={deletingId} />
       </div>
     </>
   );
@@ -1530,12 +1537,14 @@ function ProfileSummary({ profile }: { profile: Profile }) {
 function AvailabilitySummary({
   slots,
   expanded = false,
+  currentUserId,
   onEdit,
   onDelete,
   deletingId
 }: {
   slots: AvailabilitySlot[];
   expanded?: boolean;
+  currentUserId?: string;
   onEdit?: (slot: AvailabilitySlot) => void;
   onDelete?: (id: string) => void;
   deletingId?: string | null;
@@ -1548,7 +1557,9 @@ function AvailabilitySummary({
   return (
     <section className="card stack">
       <h2>Availability</h2>
-      {shown.map((slot) => (
+      {shown.map((slot) => {
+        const isOwn = !currentUserId || slot.userId === currentUserId;
+        return (
         <div key={slot.id} className="between notification unread">
           <div className="row">
             <Clock size={18} color="var(--secondary)" />
@@ -1557,9 +1568,14 @@ function AvailabilitySummary({
               <p className="muted" style={{ margin: 0 }}>
                 {formatTimeRange(slot.startTime, slot.endTime)}
               </p>
+              {currentUserId && !isOwn ? (
+                <span className="badge teal" style={{ marginTop: 6 }}>
+                  Other student
+                </span>
+              ) : null}
             </div>
           </div>
-          {onEdit && onDelete ? (
+          {onEdit && onDelete && currentUserId && isOwn ? (
             <div className="row">
               <button className="button ghost" type="button" onClick={() => onEdit(slot)}>
                 Edit
@@ -1572,7 +1588,8 @@ function AvailabilitySummary({
             <MapPin size={18} color="var(--muted)" />
           )}
         </div>
-      ))}
+        );
+      })}
       {!slots.length && <EmptyCard text="No available time blocks yet." icon={Clock} />}
     </section>
   );
@@ -1808,7 +1825,12 @@ function getSessionConflict(
   return overlaps ? "This session overlaps an existing study session. Pick another time before creating it." : null;
 }
 
-function getAvailabilityConflict(form: { dayOfWeek: string; startTime: string; endTime: string }, slots: AvailabilitySlot[], ignoredSlotId?: string | null) {
+function getAvailabilityConflict(
+  form: { dayOfWeek: string; startTime: string; endTime: string },
+  slots: AvailabilitySlot[],
+  userId: string,
+  ignoredSlotId?: string | null
+) {
   if (!weekDays.includes(form.dayOfWeek)) {
     return "Choose a valid day of the week.";
   }
@@ -1821,7 +1843,8 @@ function getAvailabilityConflict(form: { dayOfWeek: string; startTime: string; e
     return "Availability end time must be after the start time.";
   }
 
-  const overlaps = slots.some((slot) => {
+  const mine = slots.filter((slot) => slot.userId === userId);
+  const overlaps = mine.some((slot) => {
     if (slot.id === ignoredSlotId) return false;
     return slot.dayOfWeek === form.dayOfWeek && form.startTime < slot.endTime && form.endTime > slot.startTime;
   });
