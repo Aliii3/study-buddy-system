@@ -170,7 +170,7 @@ function usersAreStudyBuddies(userIdA: string, userIdB: string, store: Store): b
   );
 }
 
-function isStudySessionVisibleForUser(session: StudySession, user: User, store: Store): boolean {
+function isStudySessionVisibleForUser(session: StudySession, user: User): boolean {
   const participants = session.participants || [];
   if (
     session.userId === user.id ||
@@ -180,8 +180,9 @@ function isStudySessionVisibleForUser(session: StudySession, user: User, store: 
   ) {
     return true;
   }
-  if (!ACTIVE_SESSION_STATUSES.includes(session.status)) return false;
-  return usersAreStudyBuddies(user.id, session.creatorId, store);
+  // Joinable sessions from anyone in the app (shared roster). Matches the deployed study-session
+  // microservice, which lists all sessions, and avoids hidden state when users skip "Compute matches".
+  return ACTIVE_SESSION_STATUSES.includes(session.status);
 }
 
 function computeRealisticMatches(store: Store, userId: string): Match[] {
@@ -387,7 +388,7 @@ function handleAvailability(query: string, variables: Record<string, unknown>, s
 
 function handleSession(query: string, variables: Record<string, unknown>, store: Store, user: User) {
   if (query.includes("getStudySessions")) {
-    return { getStudySessions: store.sessions.filter((session) => isStudySessionVisibleForUser(session, user, store)) };
+    return { getStudySessions: store.sessions.filter((session) => isStudySessionVisibleForUser(session, user)) };
   }
 
   if (query.includes("createStudySession")) {
