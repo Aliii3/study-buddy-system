@@ -159,6 +159,98 @@ function normalizeStore(store: Partial<Store>): Store {
   };
 }
 
+const ACTIVE_SESSION_STATUSES = ["SCHEDULED", "UPDATED"];
+
+function usersAreStudyBuddies(userIdA: string, userIdB: string, store: Store): boolean {
+  if (userIdA === userIdB) return true;
+  return store.matches.some(
+    (m) =>
+      (m.userId === userIdA && m.matchedUserId === userIdB) ||
+      (m.userId === userIdB && m.matchedUserId === userIdA)
+  );
+}
+
+function isStudySessionVisibleForUser(session: StudySession, user: User, store: Store): boolean {
+  const participants = session.participants || [];
+  if (
+    session.userId === user.id ||
+    session.creatorId === user.id ||
+    session.receiverId === user.id ||
+    participants.some((p) => p.userId === user.id)
+  ) {
+    return true;
+  }
+  if (!ACTIVE_SESSION_STATUSES.includes(session.status)) return false;
+  return usersAreStudyBuddies(user.id, session.creatorId, store);
+}
+
+function computeRealisticMatches(store: Store, userId: string): Match[] {
+  const profileA = store.profiles.find((p) => p.userId === userId);
+  if (!profileA) return [];
+
+  const now = new Date().toISOString();
+  const results: Match[] = [];
+
+  for (const other of store.users) {
+    if (other.id === userId) continue;
+    const profileB = store.profiles.find((p) => p.userId === other.id);
+    if (!profileB) continue;
+
+    const coursesA = profileA.courses || [];
+    const coursesB = profileB.courses || [];
+    const topicsA = profileA.topics || [];
+    const topicsB = profileB.topics || [];
+    const sharedCourses = coursesA.filter((c) => coursesB.includes(c));
+    const sharedTopics = topicsA.filter((t) => topicsB.includes(t));
+
+    const slotsA = store.availability.filter((s) => s.userId === userId);
+    const slotsB = store.availability.filter((s) => s.userId === other.id);
+    const daysA = new Set(slotsA.map((s) => s.dayOfWeek));
+    const overlapAvail = slotsB.some((s) => daysA.has(s.dayOfWeek));
+
+    let raw = 0;
+    const reasons: string[] = [];
+    if (sharedCourses.length) {
+      raw += Math.min(sharedCourses.length, 2) * 20;
+      reasons.push(`Shared courses: ${sharedCourses.slice(0, 2).join(", ")}`);
+    }
+    if (sharedTopics.length) {
+      raw += Math.min(sharedTopics.length, 2) * 10;
+      reasons.push(`Shared topics: ${sharedTopics.slice(0, 2).join(", ")}`);
+    }
+    if (overlapAvail) {
+      raw += 20;
+      reasons.push("Overlapping availability");
+    }
+    if (profileA.studyMode && profileA.studyMode === profileB.studyMode) {
+      raw += 10;
+      reasons.push(`Same study mode: ${profileA.studyMode}`);
+    }
+    if (profileA.studyPace && profileA.studyPace === profileB.studyPace) {
+      raw += 5;
+      reasons.push(`Same study pace: ${profileA.studyPace}`);
+    }
+    if (profileA.studyStyle && profileA.studyStyle === profileB.studyStyle) {
+      raw += 5;
+      reasons.push("Same study style");
+    }
+
+    if (raw <= 0) continue;
+    results.push({
+      id: randomUUID(),
+      userId,
+      matchedUserId: other.id,
+      score: Math.min(raw, 100) / 100,
+      reasons,
+      status: "RECOMMENDED",
+      createdAt: now,
+      updatedAt: now
+    });
+  }
+
+  return results.sort((a, b) => b.score - a.score);
+}
+
 export async function POST(request: Request, { params }: { params: { service: ServiceKey } }) {
   try {
     const body = (await request.json()) as GraphQLBody;
@@ -293,7 +385,7 @@ function handleAvailability(query: string, variables: Record<string, unknown>, s
 
 function handleSession(query: string, variables: Record<string, unknown>, store: Store, user: User) {
   if (query.includes("getStudySessions")) {
-    return { getStudySessions: store.sessions.filter((session) => session.userId === user.id || session.creatorId === user.id || session.receiverId === user.id) };
+    return { getStudySessions: store.sessions.filter((session) => isStudySessionVisibleForUser(session, user, store)) };
   }
 
   if (query.includes("createStudySession")) {
@@ -327,6 +419,14 @@ function handleSession(query: string, variables: Record<string, unknown>, store:
     session.participants = session.participants.map((participant) => ({ ...participant, sessionId: session.id }));
     store.sessions.unshift(session);
     store.notifications.push(createNotification(user.id, "SESSION_CREATED", `Session created: ${session.title}`));
+    for (const other of store.users) {
+      if (other.id === user.id) continue;
+      if (usersAreStudyBuddies(user.id, other.id, store)) {
+        store.notifications.push(
+          createNotification(other.id, "SESSION_INVITE", `${user.name} scheduled a study session: ${session.title}`)
+        );
+      }
+    }
     return { createStudySession: session };
   }
 
@@ -450,32 +550,11 @@ function handleMatching(query: string, variables: Record<string, unknown>, store
   }
 
   if (query.includes("computeMatches")) {
-    const profile = store.profiles.find((item) => item.userId === user.id);
-    const now = new Date().toISOString();
-    const matches: Match[] = [
-      {
-        id: randomUUID(),
-        userId: user.id,
-        matchedUserId: "algorithm-ace",
-        score: profile?.courses.length ? 0.91 : 0.74,
-        reasons: ["Shared course interests", "Compatible weekly availability", "Similar study pace"],
-        status: "RECOMMENDED",
-        createdAt: now,
-        updatedAt: now
-      },
-      {
-        id: randomUUID(),
-        userId: user.id,
-        matchedUserId: "quiet-review-partner",
-        score: profile?.topics.length ? 0.84 : 0.68,
-        reasons: ["Topic overlap", "Hybrid study preference", "Good group-size fit"],
-        status: "RECOMMENDED",
-        createdAt: now,
-        updatedAt: now
-      }
-    ];
+    const matches = computeRealisticMatches(store, user.id);
     store.matches = [...matches, ...store.matches.filter((match) => match.userId !== user.id)];
-    store.notifications.push(createNotification(user.id, "MATCH_FOUND", "New study buddy recommendations are ready."));
+    if (matches.length) {
+      store.notifications.push(createNotification(user.id, "MATCH_FOUND", "New study buddy recommendations are ready."));
+    }
     return { computeMatches: matches };
   }
 
