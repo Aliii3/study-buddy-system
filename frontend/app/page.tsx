@@ -990,7 +990,7 @@ function SessionsView({
 
   async function createSession(event: React.FormEvent) {
     event.preventDefault();
-    const conflict = getSessionConflict(form, sessions);
+    const conflict = getSessionConflict(form, sessions, user.id);
     if (conflict) {
       setStatus(conflict);
       return;
@@ -1778,7 +1778,11 @@ function isErrorMessage(message: string) {
   ].some((token) => lower.includes(token));
 }
 
-function getSessionConflict(form: { startTime: string; endTime: string }, sessions: StudySession[]) {
+function getSessionConflict(
+  form: { startTime: string; endTime: string },
+  sessions: StudySession[],
+  userId: string
+) {
   const start = new Date(form.startTime);
   const end = new Date(form.endTime);
 
@@ -1789,7 +1793,13 @@ function getSessionConflict(form: { startTime: string; endTime: string }, sessio
     return "The session end time must be after the start time.";
   }
 
-  const overlaps = sessions.some((session) => {
+  const mySessions = sessions.filter(
+    (session) =>
+      ["SCHEDULED", "UPDATED"].includes(session.status) &&
+      (session.creatorId === userId || session.participants.some((participant) => participant.userId === userId))
+  );
+
+  const overlaps = mySessions.some((session) => {
     const existingStart = new Date(session.startTime);
     const existingEnd = session.endTime ? new Date(session.endTime) : existingStart;
     return start < existingEnd && end > existingStart;
