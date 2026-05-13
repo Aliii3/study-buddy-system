@@ -1,0 +1,29 @@
+# Render.com: New Blueprint from repo, or add a Web Service with Docker.
+# Set environment variables to your deployed GraphQL service URLs (or leave defaults for built-in API).
+
+services:
+  - type: web
+    name: study-buddy-frontend
+    runtime: docker
+    dockerfilePath: ./frontend/Dockerfile
+    dockerContext: ./frontend
+    plan: starter
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: DATABASE_URL
+        sync: false
+      - key: AUTH_SECRET
+        sync: false
+      - key: NEXT_PUBLIC_USER_API
+        sync: false
+      - key: NEXT_PUBLIC_AVAILABILITY_API
+        sync: false
+      - key: NEXT_PUBLIC_SESSION_API
+        sync: false
+      - key: NEXT_PUBLIC_NOTIFICATION_API
+        sync: false
+      - key: NEXT_PUBLIC_MATCHING_API
+        sync: false
+      - key: NEXT_PUBLIC_PROFILE_API
+        sync: false
