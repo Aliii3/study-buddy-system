@@ -31,6 +31,7 @@ const globalStore = globalThis as typeof globalThis & { studyBuddyStore?: Store 
 const globalDatabase = globalThis as typeof globalThis & {
   studyBuddyPool?: Pool;
   studyBuddyDatabaseReady?: boolean;
+  studyBuddyViewsReady?: boolean;
 };
 
 function createInitialStore() {
@@ -107,6 +108,10 @@ async function saveStore(store: Store) {
 
 async function getDatabaseStore() {
   await ensureDatabase();
+  if (!globalDatabase.studyBuddyViewsReady) {
+    const ok = await ensureStudyBuddyStateViews();
+    if (ok) globalDatabase.studyBuddyViewsReady = true;
+  }
   const result = await getPool().query<{ state: Store }>("SELECT state FROM study_buddy_state WHERE id = 'default'");
   return normalizeStore(result.rows[0]?.state || createInitialStore());
 }
@@ -132,6 +137,61 @@ async function ensureDatabase() {
   );
 
   globalDatabase.studyBuddyDatabaseReady = true;
+}
+
+/** Readable SQL views over the JSON snapshot so Neon "Tables" / SQL editor show rows (source of truth is still `study_buddy_state.state`). */
+async function ensureStudyBuddyStateViews(): Promise<boolean> {
+  const pool = getPool();
+  const views = [
+    `CREATE OR REPLACE VIEW study_buddy_availability AS
+    SELECT
+      elem->>'id' AS id,
+      elem->>'userId' AS user_id,
+      elem->>'dayOfWeek' AS day_of_week,
+      elem->>'startTime' AS start_time,
+      elem->>'endTime' AS end_time,
+      s.updated_at AS store_updated_at
+    FROM study_buddy_state s
+    CROSS JOIN LATERAL jsonb_array_elements(COALESCE(s.state->'availability', '[]'::jsonb)) AS t(elem)
+    WHERE s.id = 'default'`,
+    `CREATE OR REPLACE VIEW study_buddy_sessions AS
+    SELECT
+      elem->>'id' AS id,
+      elem->>'title' AS title,
+      elem->>'topic' AS topic,
+      elem->>'startTime' AS start_time,
+      elem->>'endTime' AS end_time,
+      elem->>'sessionType' AS session_type,
+      elem->>'status' AS status,
+      elem->>'creatorId' AS creator_id,
+      elem->>'receiverId' AS receiver_id,
+      elem->>'userId' AS user_id,
+      s.updated_at AS store_updated_at
+    FROM study_buddy_state s
+    CROSS JOIN LATERAL jsonb_array_elements(COALESCE(s.state->'sessions', '[]'::jsonb)) AS t(elem)
+    WHERE s.id = 'default'`,
+    `CREATE OR REPLACE VIEW study_buddy_users_public AS
+    SELECT
+      elem->>'id' AS id,
+      elem->>'name' AS name,
+      elem->>'email' AS email,
+      elem->>'university' AS university,
+      NULLIF(elem->>'academicYear', '')::int AS academic_year,
+      elem->>'phone' AS phone,
+      s.updated_at AS store_updated_at
+    FROM study_buddy_state s
+    CROSS JOIN LATERAL jsonb_array_elements(COALESCE(s.state->'users', '[]'::jsonb)) AS t(elem)
+    WHERE s.id = 'default'`
+  ];
+  try {
+    for (const sql of views) {
+      await pool.query(sql);
+    }
+  } catch (error) {
+    console.error("[study-buddy-state] Could not create SQL views over JSON snapshot:", error);
+    return false;
+  }
+  return true;
 }
 
 function getPool() {
